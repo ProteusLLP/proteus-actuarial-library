@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proteus-actuarial-library"
+version = "0.0.7"
+authors = [
+  { name="James Norman", email="james.norman@proteusllp.com" },
+]
+description = "Proteus Actuarial Library: A package for building and running stochastic actuarial models in Python."
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+]
+license = {text = "MIT License with Commons Clause"}
+keywords=["actuarial", "insurance","capital"]
+dependencies = [
+  "numpy",
+  "scipy",
+  "plotly",
+]
+
+[project.optional-dependencies]
+gpu = ["cupy-cuda12x"]
+
+[project.urls]
+Homepage = "https://github.com/pythactuary/python-capital-model"
+Issues = "https://github.com/pythactuary/python-capital-model/issues"
