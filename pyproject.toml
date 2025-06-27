@@ -57,7 +57,11 @@ dev = [
     "jupyter>=1.0",
     "jupyterlab>=4.0",
 ]
-ci = {include-groups = ["test"]}
+ci = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+    "pytest-xdist>=3.0",
+]
 
 [build-system]
 requires = ["pdm-backend"]
