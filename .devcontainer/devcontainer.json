@@ -25,6 +25,6 @@
       }
     }
   },
-  "postCreateCommand": "pdm install",
+  "postCreateCommand": "pdm install -G gpu",
   "remoteUser": "vscode"
 }

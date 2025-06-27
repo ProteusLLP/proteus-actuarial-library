@@ -41,8 +41,8 @@ RUN useradd -m -s /bin/bash vscode && \
     usermod -aG sudo vscode && \
     echo "vscode ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# Install dev dependencies (test + dev + GPU groups)
-RUN pdm install -dG test -dG dev -G gpu --no-self
+# Install dev dependencies (test + dev groups)
+RUN pdm install -dG test -dG dev --no-self
 
 # Switch to non-root user
 USER vscode
@@ -62,6 +62,6 @@ WORKDIR /app
 # Copy source code for CI
 COPY . .
 
-# Install CI dependencies and the package itself
+# Install test dependencies and the package itself
 # (UV_SYSTEM_PYTHON=1 inherited from deps stage)
-RUN pdm install -dG ci
+RUN pdm install -dG test
