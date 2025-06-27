@@ -47,6 +47,12 @@ includes = [
 [tool.pdm.version]
 source = "scm"
 
+# Configure PDM to always use virtual environments (not PEP 582)
+# plays nicely with vscode's pytest extension and prevents issues with
+# conflicting deps in __pypackages__ directories.
+[tool.pdm.python]
+use_venv = true
+
 [tool.pdm.dev-dependencies]
 test = [
     "pytest>=8.0",
