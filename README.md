@@ -5,6 +5,8 @@ An actuarial stochastic modeling library in python.
 **Note**
 This library is still in development!
 
+📚 **[Development Guide](docs/development.md)** - Get started with development setup and testing
+
 ## Introduction
 
 The Proteus Actuarial Library (PAL) is a simple, fast and lightweight framework for building simulation-based actuarial and financial models. It is originated from the ![rippy](https://github.com/pythactuary/rippy) package for reinsurance modeling.
@@ -95,6 +97,10 @@ set RIPPY_USE_GPU=1
 ```
 on Windows. Set it to anything else to revert to using a CPU
 
+## Documentation
+
+- [Development Guide](docs/development.md) - Setting up the development environment and running tests
+- [Examples](examples/) - Example scripts showing how to use the library
 
 ## Project Status
 

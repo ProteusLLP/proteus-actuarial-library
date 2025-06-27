@@ -1,13 +1,14 @@
 {
-    "python.testing.pytestArgs": [
-        "tests"
-    ],
-    "python.testing.unittestEnabled": false,
+    // Configure Python interpreter to use PDM virtual environment
+    "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+    
+    // Automatically activate the virtual environment in terminal
+    "python.terminal.activateEnvironment": true,
+    
+    // Configure pytest path to use the one installed in PDM virtual environment
+    // This ensures VS Code test discovery and execution use the correct pytest
+    "python.testing.pytestPath": "/workspace/.venv/bin/pytest",
     "python.testing.pytestEnabled": true,
-    "flake8.args": [
-        "--max-line-length=120",
-        "--ignore=E203,E501,W503"
-    ],
-    "editor.formatOnSave": true,
-    "editor.defaultFormatter": "ms-python.black-formatter"
+    "python.testing.unittestEnabled": false
 }
+EOF < /dev/null
