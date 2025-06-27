@@ -100,7 +100,7 @@ jobs:
         
       - name: Build package
         run: |
-          docker run --rm -v $(pwd):/app -w /app proteus-ci \
+          docker run --rm proteus-ci \
             pdm build
 
       - name: Upload distributions
