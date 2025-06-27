@@ -1,0 +1,30 @@
+{
+  "name": "Proteus Actuarial Library",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "target": "dev"
+  },
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.pylint",
+        "ms-python.black-formatter",
+        "ms-toolsai.jupyter"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+        "python.terminal.activateEnvironment": true,
+        "python.testing.pytestArgs": ["-v"],
+        "python.testing.pytestEnabled": true,
+        "python.testing.unittestEnabled": false,
+        "python.formatting.provider": "black"
+      }
+    }
+  },
+  "postCreateCommand": "pdm install -G gpu",
+  "remoteUser": "vscode"
+}
