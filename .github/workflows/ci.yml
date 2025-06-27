@@ -65,7 +65,7 @@ jobs:
         
       - name: Run tests
         run: |
-          docker run --rm -v $(pwd):/app -w /app proteus-ci \
+          docker run --rm proteus-ci \
             pdm run pytest -v --cov=pal --cov-report=xml
             
       # Validate example scripts can compile without running them
@@ -73,7 +73,7 @@ jobs:
       # or other services that would complicate CI testing
       - name: Check examples compile
         run: |
-          docker run --rm -v $(pwd):/app -w /app proteus-ci \
+          docker run --rm proteus-ci \
             pdm run python -m compileall examples/ -f
             
       - name: Upload coverage reports

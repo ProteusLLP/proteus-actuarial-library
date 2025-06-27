@@ -60,5 +60,4 @@ WORKDIR /app
 COPY . .
 
 # Install test dependencies and the package itself
-# (UV_SYSTEM_PYTHON=1 inherited from deps stage)
 RUN pdm install -dG test
