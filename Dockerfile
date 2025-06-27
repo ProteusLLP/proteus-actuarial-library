@@ -19,9 +19,9 @@ WORKDIR /app
 # Copy dependency files
 COPY pyproject.toml pdm.lock* ./
 
-# Install all dependencies using PDM with uv backend
+# Install only main dependencies using PDM with uv backend
 ENV UV_SYSTEM_PYTHON=1
-RUN pdm install -dG test -G gpu --no-self
+RUN pdm install --no-self
 
 # Development stage
 FROM deps AS dev
@@ -38,8 +38,8 @@ RUN useradd -m -s /bin/bash vscode && \
     usermod -aG sudo vscode && \
     echo "vscode ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# Install Jupyter and other dev tools using uv for speed
-RUN uv pip install jupyter jupyterlab --system
+# Install dev dependencies (test + dev + GPU groups)
+RUN pdm install -dG test -G dev -G gpu --no-self
 
 # Switch to non-root user
 USER vscode
@@ -59,5 +59,5 @@ WORKDIR /app
 # Copy source code for CI
 COPY . .
 
-# Install the package itself (dependencies already installed in deps stage)
-RUN pdm install --no-deps
+# Install test dependencies and the package itself (no GPU for CI)
+RUN pdm install -dG test

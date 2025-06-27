@@ -21,6 +21,6 @@
       }
     }
   },
-  "postCreateCommand": "pdm install -dG test -G gpu",
+  "postCreateCommand": "pdm install -dG test -G dev -G gpu",
   "remoteUser": "vscode"
 }
