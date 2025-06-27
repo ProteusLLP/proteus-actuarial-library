@@ -57,6 +57,7 @@ dev = [
     "jupyter>=1.0",
     "jupyterlab>=4.0",
 ]
+ci = {include-groups = ["test"]}
 
 [build-system]
 requires = ["pdm-backend"]

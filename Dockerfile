@@ -1,6 +1,10 @@
 # Base stage - Python + system dependencies
 FROM python:3.13-slim AS base
 
+# Configure package managers for container environment
+ENV UV_SYSTEM_PYTHON=1
+ENV PDM_USE_VENV=false
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -20,7 +24,6 @@ WORKDIR /app
 COPY pyproject.toml pdm.lock* ./
 
 # Install only main dependencies using PDM with uv backend
-ENV UV_SYSTEM_PYTHON=1
 RUN pdm install --no-self
 
 # Development stage
@@ -39,7 +42,7 @@ RUN useradd -m -s /bin/bash vscode && \
     echo "vscode ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Install dev dependencies (test + dev + GPU groups)
-RUN pdm install -dG test -G dev -G gpu --no-self
+RUN pdm install -dG test -dG dev -G gpu --no-self
 
 # Switch to non-root user
 USER vscode
@@ -59,5 +62,6 @@ WORKDIR /app
 # Copy source code for CI
 COPY . .
 
-# Install test dependencies and the package itself (no GPU for CI)
-RUN pdm install -dG test
+# Install CI dependencies and the package itself
+# (UV_SYSTEM_PYTHON=1 inherited from deps stage)
+RUN pdm install -dG ci
