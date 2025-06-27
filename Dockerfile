@@ -1,9 +1,6 @@
 # Base stage - Python + system dependencies
 FROM python:3.13-slim AS base
 
-# Configure package managers for container environment
-ENV UV_SYSTEM_PYTHON=1
-ENV PDM_USE_VENV=false
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
