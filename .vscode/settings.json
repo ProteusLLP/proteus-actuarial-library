@@ -11,4 +11,3 @@
     "python.testing.pytestEnabled": true,
     "python.testing.unittestEnabled": false
 }
-EOF < /dev/null
