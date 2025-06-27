@@ -138,6 +138,12 @@ docker build --no-cache --target dev -t proteus-dev .
 
 Make sure you rebuilt the container after adding dependencies with `pdm add`. VS Code may use cached layers that don't include new dependencies.
 
+## See Also
+
+- [Usage Guide](usage.md) - Comprehensive examples and API documentation  
+- [Examples](../examples/) - Example scripts showing library usage
+- [Main README](../README.md) - Project overview and installation
+
 ## References
 
 - [PDM Documentation](https://pdm-project.org/)
