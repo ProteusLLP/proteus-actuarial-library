@@ -1,70 +1,60 @@
-"""
-Distributions Module
+"""Distributions Module.
 
 This module contains classes for simulating statistical distributions.
 The implementations follow conventions similar to Klugman. Random number
 generation and GPU support are managed via configuration settings.
+
+It's expected that you construct distributions of distributions ie. a distribution can
+be created and passed to another distribution as a parameter.
 """
 
 # Standard library imports
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Union, TypeVar
+import typing as t
+from abc import ABC
 
 # Local imports
-from .config import config, xp as np, _use_gpu
+from ._maths import special
+from ._maths import xp as np
+from .config import config
 from .stochastic_scalar import StochasticScalar
+from .types import DistributionLike, Numeric, NumericLike
 
-# Use cupyx if GPU is enabled
-if _use_gpu:
-    import cupyx.scipy.special as special  # type: ignore
-else:
-    import scipy.special as special  # type: ignore
-
-# Type aliases
-NumberType = Union[float, int]
-NumberOrStochasticScalar = TypeVar(
-    "NumberOrStochasticScalar", NumberType, StochasticScalar
-)
+TOLERANCE = 1e-10  # Tolerance for numerical comparisons
 
 
-class DistributionBase(ABC):
+class DistributionBase(DistributionLike):
     """Abstract base class for statistical distributions."""
 
-    def __init__(self, **params: Any) -> None:
+    def __init__(self, **params: NumericLike) -> None:
+        """Initialize distribution with parameters."""
         # Store parameters in a private dictionary.
-        self._params: Dict[str, Any] = params
+        self._params: dict[str, NumericLike] = params
 
-    @property
-    def _param_values(self):
-        # Yields parameter values; if a parameter is a StochasticScalar, its 'values' are returned.
-        for param in self._params.values():
-            yield param.values if isinstance(param, StochasticScalar) else param
-
-    @abstractmethod
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
         """Compute the cumulative distribution function at x."""
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
         """Compute the inverse cumulative distribution function at u."""
-        pass
+        raise NotImplementedError
 
     def generate(
-        self, n_sims: int | None = None, rng: np.random.Generator = config.rng
+        self, n_sims: int | None = None, rng: np.random.Generator | None = None
     ) -> StochasticScalar:
-        """
-        Generate random samples from the distribution.
+        """Generate random samples from the distribution.
 
         Parameters:
-            n_sims (int, optional): Number of simulations. Uses config.n_sims if None.
-            rng (np.random.Generator, optional): Random number generator.
+            n_sims (optional): Number of simulations. Uses config.n_sims if None.
+            rng (optional): Random number generator.
 
         Returns:
             StochasticScalar: Generated samples.
         """
         if n_sims is None:
             n_sims = config.n_sims
+
+        if rng is None:
+            rng = config.rng
 
         result = self._generate(n_sims, rng)
         # Merge coupled variable groups from parameters if applicable.
@@ -76,6 +66,13 @@ class DistributionBase(ABC):
     def _generate(self, n_sims: int, rng: np.random.Generator) -> StochasticScalar:
         # Default generation method using the inverse CDF technique.
         return StochasticScalar(self.invcdf(rng.uniform(size=n_sims)))
+
+    @property
+    def _param_values(self) -> t.Generator[Numeric]:
+        # Yields parameter values; if a parameter is a StochasticScalar, its
+        # 'values' are returned.
+        for param in self._params.values():
+            yield param.values if isinstance(param, StochasticScalar) else param
 
 
 class DiscreteDistributionBase(DistributionBase, ABC):
@@ -92,16 +89,19 @@ class Poisson(DiscreteDistributionBase):
     """Poisson Distribution.
 
     Parameters:
-        mean (float): Mean number of events.
+        mean: Mean number of events.
     """
 
-    def __init__(self, mean: float) -> None:
+    def __init__(self, mean: Numeric) -> None:
+        """Initialize Poisson distribution with mean parameter."""
         super().__init__(mean=mean)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         return special.pdtr(x, self._params["mean"])
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         return special.pdtrik(u, self._params["mean"])
 
     def _generate(self, n_sims: int, rng: np.random.Generator) -> StochasticScalar:
@@ -110,47 +110,55 @@ class Poisson(DiscreteDistributionBase):
 
 
 class NegBinomial(DiscreteDistributionBase):
-    """Negative Binomial Distribution.
-
-    Parameters:
-        n (float or StochasticScalar): Number of failures until stop.
-        p (float or StochasticScalar): Probability of success.
-    """
+    """Negative Binomial Distribution."""
 
     def __init__(
-        self, n: Union[float, StochasticScalar], p: Union[float, StochasticScalar]
+        self,
+        n: Numeric,
+        p: Numeric,
     ) -> None:
+        """Initialize negative binomial distribution.
+
+        Args:
+            n: Number of failures until stop.
+            p: Probability of success.
+        """
         super().__init__(n=n, p=p)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         n, p = self._param_values
         return special.nbdtr(x, n, p)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         n, p = self._param_values
         return special.nbdtri(u, n, p)
 
     def _generate(self, n_sims: int, rng: np.random.Generator) -> StochasticScalar:
         n, p = self._param_values
-        return StochasticScalar(rng.negative_binomial(n, p, n_sims))
+        return StochasticScalar(rng.negative_binomial(n, p, size=n_sims))
 
 
 class Binomial(DiscreteDistributionBase):
-    """Binomial Distribution.
+    """Binomial Distribution."""
 
-    Parameters:
-        n (int): Number of trials.
-        p (float): Probability of success.
-    """
+    def __init__(self, n: Numeric, p: Numeric) -> None:
+        """Initialize binomial distribution.
 
-    def __init__(self, n: int, p: float) -> None:
+        Args:
+            n: Number of trials.
+            p: Probability of success.
+        """
         super().__init__(n=n, p=p)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         n, p = self._param_values
         return special.bdtr(x, n, p)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         n, p = self._param_values
         return special.bdtri(u, n, p)
 
@@ -165,20 +173,36 @@ class HyperGeometric(DiscreteDistributionBase):
     Models the number of successes in draws without replacement.
 
     Parameters:
-        ngood (int): Number of good items.
-        nbad (int): Number of bad items.
-        population_size (int): Total population size.
+        ngood: Number of good items.
+        nbad: Number of bad items.
+        population_size: Total population size.
     """
 
-    def __init__(self, ngood: int, nbad: int, population_size: int) -> None:
+    def __init__(
+        self,
+        ngood: Numeric,
+        nbad: Numeric,
+        population_size: Numeric,
+    ) -> None:
+        """Initialize hypergeometric distribution.
+
+        Args:
+            ngood: Number of good items.
+            nbad: Number of bad items.
+            population_size: Total population size.
+        """
         # Note: population_size is stored with key 'n'
         super().__init__(ngood=ngood, nbad=nbad, n=population_size)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
-        raise NotImplementedError("CDF for HyperGeometric is not implemented.")
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
+        raise NotImplementedError(f"CDF for {type(self).__name__} is not implemented.")
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
-        raise NotImplementedError("Inverse CDF for HyperGeometric is not implemented.")
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
+        raise NotImplementedError(
+            f"Inverse CDF for {type(self).__name__} is not implemented."
+        )
 
     def _generate(self, n_sims: int, rng: np.random.Generator) -> StochasticScalar:
         ngood, nbad, n = self._param_values
@@ -194,29 +218,34 @@ class GPD(DistributionBase):
     Defined by:
         F(x) = 1 - (1 + ξ(x-μ)/σ)^(-1/ξ) for ξ ≠ 0,
         F(x) = 1 - exp(-(x-μ)/σ) for ξ = 0.
-
-    Parameters:
-        shape: ξ, the shape parameter.
-        scale: σ, the scale parameter.
-        loc: μ, the location parameter.
     """
 
     def __init__(
         self,
-        shape: NumberOrStochasticScalar,
-        scale: NumberOrStochasticScalar,
-        loc: NumberOrStochasticScalar,
+        shape: NumericLike,
+        scale: NumericLike,
+        loc: NumericLike,
     ) -> None:
+        """Initialize GPD distribution.
+
+        Args:
+            shape: Shape parameter.
+            scale: Scale parameter.
+            loc: Location parameter.
+        """
         super().__init__(shape=shape, scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         shape, scale, loc = self._params.values()
-        if shape != 0:
-            return 1 - (1 + shape * (x - loc) / scale) ** (-1 / shape)
+        if shape <= TOLERANCE:
+            result = 1 - (1 + shape * (x - loc) / scale) ** (-1 / shape)
         else:
-            return 1 - np.exp(-(x - loc) / scale)
+            result = 1 - np.exp(-(x - loc) / scale)
+        return result
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         shape, scale, loc = self._params.values()
         return (np.exp(np.log(1 - u) * (-shape)) - 1) * (scale / shape) + loc
 
@@ -236,18 +265,28 @@ class Burr(DistributionBase):
 
     def __init__(
         self,
-        power: NumberOrStochasticScalar,
-        shape: NumberOrStochasticScalar,
-        scale: NumberOrStochasticScalar,
-        loc: NumberOrStochasticScalar,
+        power: Numeric,
+        shape: Numeric,
+        scale: Numeric,
+        loc: Numeric,
     ) -> None:
+        """Initialize Burr distribution.
+
+        Args:
+            power: Power parameter.
+            shape: Shape parameter.
+            scale: Scale parameter.
+            loc: Location parameter.
+        """
         super().__init__(power=power, shape=shape, scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         power, shape, scale, loc = self._params.values()
         return 1 - (1 + ((x - loc) / scale) ** power) ** (-shape)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         power, shape, scale, loc = self._params.values()
         return scale * (((1 / (1 - u)) ** (1 / shape) - 1) ** (1 / power)) + loc
 
@@ -259,24 +298,40 @@ class Beta(DistributionBase):
         F(x) = (Γ(α+β) / (Γ(α)Γ(β))) ∫₀^((x-μ)/σ) u^(α-1)(1-u)^(β-1) du
 
     Parameters:
-        alpha (float): Alpha parameter.
-        beta (float): Beta parameter.
-        scale (float): Scale parameter (default 1).
-        loc (float): Location parameter (default 0).
+        alpha: Alpha parameter.
+        beta: Beta parameter.
+        scale: Scale parameter (default 1.0).
+        loc: Location parameter (default 0.0).
     """
 
     def __init__(
-        self, alpha: float, beta: float, scale: float = 1, loc: float = 0
+        self,
+        alpha: NumericLike,
+        beta: NumericLike,
+        scale: NumericLike = 1.0,
+        loc: NumericLike = 0.0,
     ) -> None:
+        """Initialize beta distribution.
+
+        Args:
+            alpha: Alpha parameter.
+            beta: Beta parameter.
+            scale: Scale parameter.
+            loc: Location parameter.
+        """
         super().__init__(alpha=alpha, beta=beta, scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         alpha, beta, scale, loc = self._params.values()
-        return special.betainc(alpha, beta, (x - loc) / scale)
+        result = special.betainc(alpha, beta, (x - loc) / scale)
+        return result
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         alpha, beta, scale, loc = self._params.values()
-        return special.betaincinv(alpha, beta, u) * scale + loc
+        result = special.betaincinv(alpha, beta, u) * scale + loc
+        return result
 
 
 class LogLogistic(DistributionBase):
@@ -286,80 +341,104 @@ class LogLogistic(DistributionBase):
         F(x) = y / (1 + y) where y = ((x-μ)/σ)^shape, x > μ
 
     Parameters:
-        shape (float): Shape parameter.
-        scale (float): Scale parameter.
-        loc (float): Location parameter (default 0).
+        shape: Shape parameter.
+        scale: Scale parameter.
+        loc: Location parameter (default 0.0).
     """
 
-    def __init__(self, shape: float, scale: float, loc: float = 0) -> None:
+    def __init__(
+        self,
+        shape: NumericLike,
+        scale: NumericLike,
+        loc: NumericLike = 0.0,
+    ) -> None:
+        """Initialize log-logistic distribution.
+
+        Args:
+            shape: Shape parameter.
+            scale: Scale parameter.
+            loc: Location parameter.
+        """
         super().__init__(shape=shape, scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
         shape, scale, loc = self._params.values()
         y = ((x - loc) / scale) ** shape
-        return y / (1 + y)
+        result = y / (1 + y)
+        return result
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
         shape, scale, loc = self._params.values()
-        return scale * ((u / (1 - u)) ** (1 / shape)) + loc
+        result = scale * ((u / (1 - u)) ** (1 / shape)) + loc
+        return result
 
 
 class Normal(DistributionBase):
-    """Normal Distribution.
+    """Normal Distribution."""
 
-    Parameters:
-        mu (float): Mean.
-        sigma (float): Standard deviation.
-    """
+    def __init__(self, mu: NumericLike, sigma: NumericLike) -> None:
+        """Initialize normal distribution.
 
-    def __init__(self, mu: float, sigma: float) -> None:
+        Args:
+            mu: Mean parameter.
+            sigma: Standard deviation parameter.
+        """
         super().__init__(mu=mu, sigma=sigma)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         mu, sigma = self._param_values
         return special.ndtr((x - mu) / sigma)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         mu, sigma = self._param_values
         return special.ndtri(u) * sigma + mu
 
 
 class Logistic(DistributionBase):
-    """Logistic Distribution.
+    """Logistic Distribution."""
 
-    Parameters:
-        mu (float): Location parameter.
-        sigma (float): Scale parameter.
-    """
+    def __init__(self, mu: NumericLike, sigma: NumericLike) -> None:
+        """Initialize logistic distribution.
 
-    def __init__(self, mu: float, sigma: float) -> None:
+        Args:
+            mu: Location parameter.
+            sigma: Scale parameter.
+        """
         super().__init__(mu=mu, sigma=sigma)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         mu, sigma = self._param_values
         return 1 / (1 + np.exp(-(x - mu) / sigma))
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         mu, sigma = self._param_values
         return mu + sigma * np.log(u / (1 - u))
 
 
 class LogNormal(DistributionBase):
-    """Log-Normal Distribution.
+    """Log-Normal Distribution."""
 
-    Parameters:
-        mu (float): Mean of the logged variable.
-        sigma (float): Standard deviation of the logged variable.
-    """
+    def __init__(self, mu: NumericLike, sigma: NumericLike) -> None:
+        """Initialize log-normal distribution.
 
-    def __init__(self, mu: float, sigma: float) -> None:
+        Args:
+            mu: Mean of the logged variable.
+            sigma: Standard deviation of the logged variable.
+        """
         super().__init__(mu=mu, sigma=sigma)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         mu, sigma = self._param_values
-        return special.ndtr((np.log(x) - mu) / sigma)
+        result = special.ndtr((np.log(x) - mu) / sigma)
+        return result
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         mu, sigma = self._param_values
         return np.exp(special.ndtri(u) * sigma + mu)
 
@@ -369,27 +448,38 @@ class Gamma(DistributionBase):
 
     Defined by:
         F(x) = (1/Γ(α)) γ(α, (x-μ)/θ), x > μ
-
-    Parameters:
-        alpha: Shape parameter.
-        theta: Scale parameter.
-        loc: Location parameter (default 0).
     """
 
-    def __init__(self, alpha: float, theta: float, loc: float = 0) -> None:
+    def __init__(
+        self,
+        alpha: NumericLike,
+        theta: NumericLike,
+        loc: NumericLike = 0.0,
+    ) -> None:
+        """Initialize gamma distribution.
+
+        Args:
+            alpha: Shape parameter.
+            theta: Scale parameter.
+            loc: Location parameter.
+        """
         super().__init__(alpha=alpha, theta=theta, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         alpha, theta, loc = self._param_values
         return special.gammainc(alpha, (x - loc) / theta)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         alpha, theta, loc = self._param_values
-        return special.gammaincinv(alpha, u) * theta + loc
+        result = special.gammaincinv(alpha, u) * theta + loc
+        return result
 
     def _generate(self, n_sims: int, rng: np.random.Generator) -> StochasticScalar:
         alpha, theta, loc = self._param_values
-        return StochasticScalar(rng.gamma(alpha, theta, size=n_sims) + loc)
+        result = StochasticScalar(rng.gamma(alpha, theta, size=n_sims) + loc)
+        return result
 
 
 class InverseGamma(DistributionBase):
@@ -397,21 +487,30 @@ class InverseGamma(DistributionBase):
 
     Defined by:
         F(x) = 1 - (1/Γ(α)) γ(α, θ/(x-μ)), x > μ
-
-    Parameters:
-        alpha: Shape parameter.
-        theta: Scale parameter.
-        loc: Location parameter (default 0).
     """
 
-    def __init__(self, alpha: float, theta: float, loc: float = 0) -> None:
+    def __init__(
+        self,
+        alpha: NumericLike,
+        theta: NumericLike,
+        loc: NumericLike = 0.0,
+    ) -> None:
+        """Initialize inverse gamma distribution.
+
+        Args:
+            alpha: Shape parameter.
+            theta: Scale parameter.
+            loc: Location parameter.
+        """
         super().__init__(alpha=alpha, theta=theta, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         alpha, theta, loc = self._param_values
         return special.gammaincc(alpha, np.divide(theta, (x - loc)))
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         alpha, theta, loc = self._param_values
         return np.divide(theta, special.gammainccinv(alpha, u)) + loc
 
@@ -421,20 +520,24 @@ class Pareto(DistributionBase):
 
     Defined by:
         F(x) = 1 - (x_m / x)^a
-
-    Parameters:
-        shape (float): Shape parameter.
-        scale (float): Scale parameter (x_m).
     """
 
-    def __init__(self, shape: float, scale: float) -> None:
+    def __init__(self, shape: NumericLike, scale: NumericLike) -> None:
+        """Initialize Pareto distribution.
+
+        Args:
+            shape: Shape parameter.
+            scale: Scale parameter.
+        """
         super().__init__(shape=shape, scale=scale)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         shape, scale = self._param_values
         return 1 - (x / scale) ** (-shape)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         shape, scale = self._param_values
         return (1 - u) ** (-1 / shape) * scale
 
@@ -446,20 +549,32 @@ class Paralogistic(DistributionBase):
         F(x) = 1 - [1 + ((x-μ)/σ)^α]^(-α), x > μ
 
     Parameters:
-        shape (float): Shape parameter.
-        scale (float): Scale parameter.
-        loc (float): Location parameter (default 0).
+        shape: Shape parameter.
+        scale: Scale parameter.
+        loc: Location parameter (default 0).
     """
 
-    def __init__(self, shape: float, scale: float, loc: float = 0) -> None:
+    def __init__(
+        self,
+        shape: NumericLike,
+        scale: NumericLike,
+        loc: NumericLike = 0.0,
+    ) -> None:
+        """Initialize paralogistic distribution.
+
+        Args:
+            shape: Shape parameter.
+            scale: Scale parameter.
+            loc: Location parameter.
+        """
         super().__init__(shape=shape, scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
         shape, scale, loc = self._params.values()
         y = 1 / (1 + ((x - loc) / scale) ** shape)
         return 1 - y**shape
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
         shape, scale, loc = self._params.values()
         return loc + scale * (((1 - u) ** (-1 / shape)) - 1) ** (1 / shape)
 
@@ -471,21 +586,27 @@ class InverseBurr(DistributionBase):
         F(x) = [(( (x-μ)/σ )^τ / (1 + ((x-μ)/σ )^τ)]^α
 
     Parameters:
-        power (float): Power parameter (τ).
-        shape (float): Shape parameter (α).
-        scale (float): Scale parameter (σ).
-        loc (float): Location parameter (μ).
+        power: Power parameter (τ).
+        shape: Shape parameter (α).
+        scale: Scale parameter (σ).
+        loc: Location parameter (μ).
     """
 
-    def __init__(self, power: float, shape: float, scale: float, loc: float) -> None:
+    def __init__(
+        self,
+        power: NumericLike,
+        shape: NumericLike,
+        scale: NumericLike,
+        loc: NumericLike,
+    ) -> None:
         super().__init__(power=power, shape=shape, scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
         power, shape, scale, loc = self._params.values()
         y = ((x - loc) / scale) ** power
         return (y / (1 + y)) ** shape
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
         power, shape, scale, loc = self._params.values()
         return (
             scale
@@ -497,34 +618,36 @@ class InverseBurr(DistributionBase):
 class InverseParalogistic(DistributionBase):
     r"""Inverse ParaLogistic Distribution.
 
-    Represents an Inverse ParaLogistic distribution with given shape and scale parameters.
+    Represents an Inverse ParaLogistic distribution with given shape and scale
+    parameters.
+
     Its CDF is defined as:
 
         F(x) = [(( (x-μ)/σ )^α / (1 + ((x-μ)/σ )^α)]^(-α),  x > μ
-
-    Parameters:
-        shape (float): The shape parameter.
-        scale (float): The scale parameter.
-        loc (float): The location parameter (default 0).
     """
 
-    def __init__(self, shape: float, scale: float, loc: float = 0) -> None:
+    def __init__(
+        self,
+        shape: NumericLike,
+        scale: NumericLike,
+        loc: NumericLike = 0.0,
+    ) -> None:
         super().__init__(shape=shape, scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
         # Unpack parameters with explicit type annotations
         params = tuple(self._params.values())
-        shape_val: float = params[0]
-        scale_val: float = params[1]
-        loc_val: float = params[2]
+        shape_val = params[0]
+        scale_val = params[1]
+        loc_val = params[2]
         y = ((x - loc_val) / scale_val) ** shape_val
         return (y / (1 + y)) ** shape_val
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
         params = tuple(self._params.values())
-        shape_val: float = params[0]
-        scale_val: float = params[1]
-        loc_val: float = params[2]
+        shape_val = params[0]
+        scale_val = params[1]
+        loc_val = params[2]
         y = u ** (1 / shape_val)
         return loc_val + scale_val * (y / (1 - y)) ** (1 / shape_val)
 
@@ -534,22 +657,26 @@ class Weibull(DistributionBase):
 
     Defined by:
         F(x) = 1 - exp(-((x-μ)/σ)^α), x > μ
-
-    Parameters:
-        shape (float): Shape parameter (α).
-        scale (float): Scale parameter (σ).
-        loc (float): Location parameter (μ).
     """
 
     def __init__(self, shape: float, scale: float, loc: float = 0) -> None:
+        """Initialize Weibull distribution.
+
+        Args:
+            shape: Shape parameter.
+            scale: Scale parameter.
+            loc: Location parameter.
+        """
         super().__init__(shape=shape, scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         shape, scale, loc = self._params.values()
         y = ((x - loc) / scale) ** shape
         return -np.expm1(-y)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         shape, scale, loc = self._params.values()
         return loc + scale * (-np.log(1 - u)) ** (1 / shape)
 
@@ -569,12 +696,12 @@ class InverseWeibull(DistributionBase):
     def __init__(self, shape: float, scale: float, loc: float = 0) -> None:
         super().__init__(shape=shape, scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
         shape, scale, loc = self._params.values()
         y = np.float_power((x - loc) / scale, -shape)
         return np.exp(-y)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
         shape, scale, loc = self._params.values()
         return loc + scale * (-1 / np.log(u)) ** (1 / shape)
 
@@ -586,19 +713,25 @@ class Exponential(DistributionBase):
         F(x) = 1 - exp(-((x-μ)/σ)), x > μ
 
     Parameters:
-        scale (float): Scale parameter.
-        loc (float): Location parameter (default 0).
+        scale: Scale parameter.
+        loc: Location parameter (default 0).
     """
 
-    def __init__(self, scale: float, loc: float = 0) -> None:
+    def __init__(self, scale: NumericLike, loc: NumericLike = 0.0) -> None:
+        """Initialize exponential distribution.
+
+        Args:
+            scale: Scale parameter.
+            loc: Location parameter.
+        """
         super().__init__(scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
         scale, loc = self._params.values()
         y = (x - loc) / scale
         return -np.expm1(-y)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
         scale, loc = self._params.values()
         return loc + scale * (-np.log(1 - u))
 
@@ -615,13 +748,21 @@ class Uniform(DistributionBase):
     """
 
     def __init__(self, a: float, b: float) -> None:
+        """Initialize uniform distribution.
+
+        Args:
+            a: Lower bound.
+            b: Upper bound.
+        """
         super().__init__(a=a, b=b)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
+        """Compute cumulative distribution function."""
         a, b = self._params.values()
         return (x - a) / (b - a)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
+        """Compute inverse cumulative distribution function."""
         a, b = self._params.values()
         return a + (b - a) * u
 
@@ -640,26 +781,26 @@ class InverseExponential(DistributionBase):
     def __init__(self, scale: float, loc: float = 0) -> None:
         super().__init__(scale=scale, loc=loc)
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
         scale, loc = self._params.values()
         y = scale * np.float_power((x - loc), -1)
         return np.exp(-y)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
         scale, loc = self._params.values()
         return loc - scale / np.log(u)
 
 
 # --- Distribution Generator Classes ---
 
-AVAILABLE_DISCRETE_DISTRIBUTIONS: Dict[str, Any] = {
+AVAILABLE_DISCRETE_DISTRIBUTIONS: dict[str, t.Any] = {
     "poisson": Poisson,
     "negbinomial": NegBinomial,
     "binomial": Binomial,
     "hypergeometric": HyperGeometric,
 }
 
-AVAILABLE_CONTINUOUS_DISTRIBUTIONS: Dict[str, Any] = {
+AVAILABLE_CONTINUOUS_DISTRIBUTIONS: dict[str, t.Any] = {
     "beta": Beta,
     "burr": Burr,
     "exponential": Exponential,
@@ -681,19 +822,19 @@ AVAILABLE_CONTINUOUS_DISTRIBUTIONS: Dict[str, Any] = {
 }
 
 
-class DistributionGeneratorBase(ABC):
-    """
-    Base class for parameterized distribution generators.
+class DistributionGeneratorBase:
+    """Base class for parameterized distribution generators.
+
     Wraps a DistributionBase instance.
     """
 
     def __init__(self, distribution: DistributionBase) -> None:
         self.this_distribution = distribution
 
-    def cdf(self, x: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def cdf(self, x: Numeric) -> Numeric:
         return self.this_distribution.cdf(x)
 
-    def invcdf(self, u: NumberOrStochasticScalar) -> NumberOrStochasticScalar:
+    def invcdf(self, u: Numeric) -> Numeric:
         return self.this_distribution.invcdf(u)
 
     def generate(
@@ -705,11 +846,12 @@ class DistributionGeneratorBase(ABC):
 class DiscreteDistributionGenerator(DistributionGeneratorBase):
     """Discrete distribution generator instantiated by name."""
 
-    def __init__(self, distribution_name: str, parameters: list) -> None:
+    def __init__(self, distribution_name: str, parameters: list[Numeric]) -> None:
         distribution_name = distribution_name.lower()
         if distribution_name not in AVAILABLE_DISCRETE_DISTRIBUTIONS:
             raise ValueError(
-                f"Distribution {distribution_name} must be one of {list(AVAILABLE_DISCRETE_DISTRIBUTIONS.keys())}"
+                f"Distribution {distribution_name} must be one of "
+                f"{list(AVAILABLE_DISCRETE_DISTRIBUTIONS.keys())}"
             )
         distribution_cls = AVAILABLE_DISCRETE_DISTRIBUTIONS[distribution_name]
         super().__init__(distribution_cls(*parameters))
@@ -718,11 +860,12 @@ class DiscreteDistributionGenerator(DistributionGeneratorBase):
 class ContinuousDistributionGenerator(DistributionGeneratorBase):
     """Continuous distribution generator instantiated by name."""
 
-    def __init__(self, distribution_name: str, parameters: list) -> None:
+    def __init__(self, distribution_name: str, parameters: list[Numeric]) -> None:
         distribution_name = distribution_name.lower()
         if distribution_name not in AVAILABLE_CONTINUOUS_DISTRIBUTIONS:
             raise ValueError(
-                f"Distribution {distribution_name} must be one of {list(AVAILABLE_CONTINUOUS_DISTRIBUTIONS.keys())}"
+                f"Distribution {distribution_name} must be one of "
+                f"{list(AVAILABLE_CONTINUOUS_DISTRIBUTIONS.keys())}"
             )
         distribution_cls = AVAILABLE_CONTINUOUS_DISTRIBUTIONS[distribution_name]
         super().__init__(distribution_cls(*parameters))

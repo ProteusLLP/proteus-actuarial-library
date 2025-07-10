@@ -1,8 +1,9 @@
-from pal import config, distributions
-from pal.config import xp as np
-from pal.variables import ProteusVariable, FreqSevSims
-import pandas as pd  # type: ignore
 import math
+
+import pandas as pd  # type: ignore
+from pal import config, distributions
+from pal._maths import xp as np
+from pal.variables import FreqSevSims, ProteusVariable
 
 n_sims = 100000
 config.n_sims = n_sims

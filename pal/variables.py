@@ -1,17 +1,27 @@
 from __future__ import annotations
-from typing import Union, overload
-from .frequency_severity import FreqSevSims
-from .stochastic_scalar import StochasticScalar, ProteusStochasticVariable
+
+import os
+import typing as t
+
 import numpy as np
-import scipy.stats  # type: ignore
-import pandas as pd  # type: ignore
+import pandas as pd
 import plotly.graph_objects as go  # type: ignore
 import plotly.io as pio  # type: ignore
+import scipy.stats
+
+from .couplings import ProteusStochasticVariable
+from .frequency_severity import FreqSevSims
+from .stochastic_scalar import StochasticScalar
+from .types import Numeric, NumericLike, ProteusLike
 
 pio.templates.default = "none"
 
+__all__ = [
+    "ProteusVariable",
+]
 
-class ProteusVariable:
+
+class ProteusVariable(ProteusLike):
     """A class to hold a multivariate variable in a simulation.
 
     A Proteus Variable is a hierarchical structure that can hold multiple
@@ -19,36 +29,39 @@ class ProteusVariable:
     for the creation of more complex variables that can be used in
     simulations.
 
-    Each level of a Proteus Variable can be a list or dictionary of scalar variables or other ProteusVariable objects. Each level can have a different number of elements.
+    Each level of a Proteus Variable can be a list or dictionary of scalar
+    variables or other ProteusVariable objects. Each level can have a different
+    number of elements.
     Each level has a name that can be used to access the level in the hierarchy.
 
     Sub elements of a ProteusVariable can be accessed using the [] notation.
 
     """
 
-    def __len__(self):
-        return len(self.values)
+    dim_name: str
+    # not really sure what this thing should hold?
+    values: dict[str, Numeric | ProteusLike]
+    dimensions: list[str]
 
     def __init__(
         self,
         dim_name: str,
-        values: (
-            list[Union[ProteusVariable, StochasticScalar | FreqSevSims | float | int]]
-            | dict[
-                str,
-                Union[ProteusVariable, StochasticScalar | FreqSevSims | float | int],
-            ]
-        ),
+        values: dict[str, Numeric | ProteusLike],
     ):
+        """Initialize a ProteusVariable.
+
+        Args:
+            dim_name: Name of the dimension.
+            values: A dictionary which will contain variables that must support
+                PAL variable operations.
+        """
         self.dim_name: str = dim_name
         self.values = values
         self.dimensions = [dim_name]
         self._dimension_set = set(self.dimensions)
         # check the number of simulations in each variable
         self.n_sims = None
-        for value in (
-            self.values.values() if isinstance(self.values, dict) else self.values
-        ):
+        for value in self:
             if isinstance(value, ProteusVariable):
                 if (
                     self._dimension_set.intersection(value._dimension_set)
@@ -68,17 +81,42 @@ class ProteusVariable:
             elif isinstance(value, ProteusStochasticVariable):
                 if value.n_sims != self.n_sims:
                     if self.n_sims == 1:
-                        self.n_sims == value.n_sims
+                        self.n_sims = value.n_sims
                     else:
                         raise ValueError("Number of simulations do not match.")
 
-    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
-        if method != "__call__":
-            return NotImplemented
+    def __len__(self) -> int:
+        return len(self.values)
 
-        def recursive_apply(*items):
+    def __array_ufunc__(
+        self, ufunc: np.ufunc, method: str, *inputs: t.Any, **kwargs: t.Any
+    ) -> ProteusVariable:
+        """Handle numpy universal functions applied to ProteusVariable objects.
+
+        This method enables ProteusVariable objects to work with numpy ufuncs by
+        recursively applying the ufunc to the hierarchical structure of values.
+
+        Args:
+            ufunc: The numpy universal function to apply.
+            method: The method name (only "__call__" is supported).
+            *inputs: Input arguments to the ufunc.
+            **kwargs: Keyword arguments to pass to the ufunc.
+
+        Returns:
+            A new ProteusVariable with the ufunc applied to its values.
+
+        Raises:
+            NotImplementedError: If method is not "__call__".
+        """
+        if method != "__call__":
+            raise NotImplementedError(
+                f"Method {method} not implemented for ProteusVariable."
+            )
+
+        def recursive_apply(*items: t.Any, **kwargs: t.Any) -> t.Any:
             # If none of the items is a ProteusVariable (i.e. a container), then
-            # assume they are leaf nodes (e.g., numbers or stochastic types) and simply call ufunc.
+            # assume they are leaf nodes (e.g., numbers or stochastic types) and
+            # simply call ufunc.
             if not any(isinstance(item, ProteusVariable) for item in items):
                 # For stochastic types that implement __array_ufunc__, this call will
                 # automatically delegate to their own __array_ufunc__.
@@ -95,327 +133,372 @@ class ProteusVariable:
                 ][0]
             ]
 
-            if isinstance(first_container, ProteusVariable):
-                # Process dictionary containers.
-                if isinstance(first_container.values, dict):
-                    new_data = {}
-                    # Iterate over each key in the container.
-                    for key in first_container.values:
-                        new_items = []
-                        for item in items:
-                            if isinstance(item, ProteusVariable):
-                                new_items.append(item.values[key])
-                            else:
-                                new_items.append(item)
-                        new_data[key] = recursive_apply(*new_items)
-                    return ProteusVariable(first_container.dim_name, new_data)
-                # Process list containers.
-                elif isinstance(first_container.values, list):
-                    new_list = []
-                    for idx, _ in enumerate(first_container.values):
-                        new_items = []
-                        for item in items:
-                            if isinstance(item, ProteusVariable):
-                                new_items.append(item.values[idx])
-                            else:
-                                new_items.append(item)
-                        new_list.append(recursive_apply(*new_items))
-                    return ProteusVariable(first_container.dim_name, new_list)
-                else:
-                    # In case data is neither dict nor list, try applying ufunc directly.
-                    return ufunc(first_container.values, **kwargs)
-            else:
-                assert "No ProteusVariable found in inputs, cannot apply ufunc."
-
-        return recursive_apply(*inputs)
-
-    def __array_function__(self, func, types, args, kwargs):
-        args = [
-            (
-                (
-                    list(arg.values.values())
-                    if isinstance(arg.values, dict)
-                    else arg.values
+            # if the first container is a ProteusVariable, we can assume that
+            # all other items are also ProteusVariables or compatible types.
+            if not isinstance(first_container, ProteusVariable):
+                raise TypeError(
+                    f"No {type(self).__name__} found in inputs, cannot apply ufunc."
                 )
-                if isinstance(arg, ProteusVariable)
-                else arg
-            )
+
+            # Process dictionary containers.
+            if isinstance(first_container.values, dict):
+                new_data: dict[str, t.Any] = {}
+                # Iterate over each key in the container.
+                for key in first_container.values:
+                    new_items: list[t.Any] = []
+                    for item in items:
+                        # Assumes that data types are homogeneous across nodes ie. if
+                        # the parent ProteusVariable contains dicts, then children
+                        # should also contain dicts.
+                        if isinstance(item, ProteusVariable):
+                            if not isinstance(item.values, dict):
+                                raise TypeError(
+                                    f"Expected dict values in {type(self).__name__}, "
+                                    f"but got {type(item.values).__name__}."
+                                )
+                            new_items.append(item.values[key])
+                        else:
+                            new_items.append(item)
+                    new_data[key] = recursive_apply(*new_items, **kwargs)
+                return ProteusVariable(first_container.dim_name, new_data)
+
+            # In case data is not a dict, try applying ufunc directly.
+            return t.cast(ProteusVariable, ufunc(first_container.values, **kwargs))
+
+        return t.cast(ProteusVariable, recursive_apply(*inputs, **kwargs))
+
+    def __array_function__(
+        self,
+        func: t.Any,
+        _: tuple[type, ...],
+        args: tuple[t.Any, ...],
+        kwargs: dict[str, t.Any],
+    ) -> ProteusVariable:
+        """Handle numpy array functions applied to ProteusVariable objects.
+
+        This method enables ProteusVariable objects to work with numpy array functions
+        by extracting the underlying values, applying the function, and reconstructing
+        the ProteusVariable with the result.
+
+        Args:
+            func: The numpy array function to apply.
+            _: Tuple of types involved in the operation (unused).
+            args: Positional arguments to the function.
+            kwargs: Keyword arguments to pass to the function.
+
+        Returns:
+            A new ProteusVariable with the function applied to its values.
+        """
+        parsed_args = [
+            (list(arg.values.values()) if isinstance(arg, ProteusVariable) else arg)
             for arg in args
         ]
-        temp = func(*args, **kwargs)
-        if isinstance(self.values, dict):
-            return ProteusVariable(
-                self.dim_name,
-                {key: temp[i] for i, key in enumerate(self.values.keys())},
-            )
-        else:
-            return ProteusVariable(self.dim_name, [value for value in temp])
+        temp = func(*parsed_args, **kwargs)
+        return ProteusVariable(
+            self.dim_name,
+            {key: temp[i] for i, key in enumerate(self.values.keys())},
+        )
 
-    @overload
-    def sum(self) -> StochasticScalar | FreqSevSims | float | int: ...
-    @overload
-    def sum(self, dimensions: list[str]) -> ProteusVariable: ...
+    def sum(self, dimensions: list[str] | None = None) -> NumericLike:
+        """Sum the variables across the specified dimensions.
 
-    def sum(
-        self, dimensions: list[str] = []
-    ) -> Union[ProteusVariable, ProteusStochasticVariable | float | int]:
-        """Sum the variables across the specified dimensions. Returns a new ProteusVariable with the summed values."""
-        if dimensions is None or dimensions == []:
-            result = sum(self)
+        Returns a new ProteusVariable with the summed values.
+        """
+        if dimensions is None:
+            dimensions = []
+        if dimensions == []:
+            result = self.sum()
             return result
-        if self.dimensions in dimensions:
-            result = ProteusVariable(dim_name=self.values[0].dimensions, values=0)
-            for value in self.values:
-                if isinstance(value, ProteusVariable | StochasticScalar):
-                    result = result + value.sum(dimensions)
-                else:
-                    result = result + value
-            return result
-        else:
-            return self
 
-    def __iter__(self):
-        if isinstance(self.values, dict):
-            return iter(self.values.values())
-        else:
-            return iter(self.values)
+        return self
 
-    def _binary_operation(self, other, operation):
+        # FIXME: This always evaluates to false and so the code never executes in this
+        # block. Basically, self.dimensions is always a list of strings and so is
+        # dimensions therefore dimensions would have to be a list of lists for this to
+        # evaluate to true - perhaps the intention was to check if the set of dimensions
+        # in self is a subset of the dimensions passed in? ie.
+        # if set(self.dimensions) <= set(dimensions): ...
+        # Here is the original code...
+        # if self.dimensions in dimensions:
+        #     # Also, the values here could be a dict?
+        #     result = ProteusVariable(dim_name=self.values[0].dimensions, values=0)
+        #     for value in self.values:
+        #         if isinstance(value, (ProteusVariable, StochasticScalar)):
+        #             result += value.sum(dimensions)
+        #         else:
+        #             result += value
+        #     return result
+        # else:
+        #     return self
+
+    def __iter__(self) -> t.Iterator[NumericLike]:
+        return iter(self.values.values())
+
+    def _binary_operation(
+        self,
+        other: object,
+        operation: t.Callable[[t.Any, t.Any], t.Any],
+    ) -> t.Any:
+        """Perform a binary operation between this ProteusVariable and another value.
+
+        This method applies a binary operation element-wise between this
+        ProteusVariable and another ProteusVariable or scalar value, preserving the
+        hierarchical structure.
+
+        Args:
+            other: The other operand, which can be another ProteusVariable or a
+                numeric value.
+            operation: A callable that takes two arguments and returns the result
+                of the operation.
+
+        Returns:
+            The result of the binary operation.
+
+        Raises:
+            ValueError: If the other operand is a ProteusVariable with mismatched
+                dimensions.
+        """
         if isinstance(other, ProteusVariable):
+            # Assumed that the values and dimensions on self and other are homogeneous.
             if self.dimensions != other.dimensions:
                 raise ValueError("Dimensions of the two variables do not match.")
-        if isinstance(self.values, dict):
-            if isinstance(other, ProteusVariable):
-                return ProteusVariable(
-                    dim_name=self.dim_name,
-                    values={
-                        key: operation(value, other.values[key])
-                        for key, value in self.values.items()
-                    },
-                )
-            return ProteusVariable(
+
+            # strange syntax here, but this is to ensure that the type of the
+            # returned ProteusVariable is the same as the type of self and therefore
+            # satisfies typechecks.
+            return type(self)(
                 dim_name=self.dim_name,
                 values={
-                    key: operation(value, other) for key, value in self.values.items()
+                    key: operation(value, other.values[key])
+                    for key, value in self.values.items()
                 },
             )
-        elif isinstance(self.values, list):
-            if isinstance(other, ProteusVariable):
-                return ProteusVariable(
-                    dim_name=self.dim_name,
-                    values=[
-                        operation(value, other.values[i])
-                        for i, value in enumerate(self.values)
-                    ],
-                )
-            return ProteusVariable(
-                dim_name=self.dim_name,
-                values=[operation(value, other) for i, value in enumerate(self.values)],
-            )
 
-    def __add__(self, other) -> ProteusVariable:
-        return self._binary_operation(other, lambda a, b: a + b)
+        raise TypeError(
+            f"Unsupported type for binary operation: {type(self.values).__name__}"
+        )
 
-    def __radd__(self, other) -> ProteusVariable:
+    # Arithmetic operations
+    def __add__(self, other: t.Any) -> t.Self:
+        return t.cast(t.Self, self._binary_operation(other, lambda a, b: a + b))
+
+    def __radd__(self, other: t.Any) -> t.Self:
         return self.__add__(other)
 
-    def __mul__(self, other) -> ProteusVariable:
+    def __sub__(self, other: t.Any) -> t.Self:
+        return t.cast(t.Self, self._binary_operation(other, lambda a, b: a - b))
 
-        return self._binary_operation(other, lambda a, b: a * b)
+    def __rsub__(self, other: t.Any) -> t.Self:
+        return t.cast(t.Self, self._binary_operation(other, lambda a, b: b - a))
 
-    def __rmul__(self, other) -> ProteusVariable:
+    def __mul__(self, other: t.Any) -> t.Self:
+        return t.cast(t.Self, self._binary_operation(other, lambda a, b: a * b))
+
+    def __rmul__(self, other: t.Any) -> t.Self:
         return self.__mul__(other)
 
-    def __sub__(self, other) -> ProteusVariable:
-        return self._binary_operation(other, lambda a, b: a - b)
+    def __truediv__(self, other: t.Any) -> t.Self:
+        return t.cast(t.Self, self._binary_operation(other, lambda a, b: a / b))
 
-    def __rsub__(self, other) -> ProteusVariable:
-        return self._binary_operation(other, lambda a, b: b - a)
+    def __rtruediv__(self, other: t.Any) -> t.Self:
+        return t.cast(t.Self, self._binary_operation(other, lambda a, b: b / a))
 
-    def __truediv__(self, other) -> ProteusVariable:
-        return self._binary_operation(other, lambda a, b: a / b)
+    def __pow__(self, other: t.Any) -> t.Self:
+        return t.cast(t.Self, self._binary_operation(other, lambda a, b: a**b))
 
-    def __rtruediv__(self, other) -> ProteusVariable:
-        return self._binary_operation(other, lambda a, b: b / a)
+    def __rpow__(self, other: t.Any) -> t.Self:
+        return t.cast(t.Self, self._binary_operation(other, lambda a, b: b**a))
 
-    def __ge__(self, other) -> ProteusVariable:
-        return self._binary_operation(other, lambda a, b: a >= b)
+    def __neg__(self) -> t.Self:
+        """Return the negation of the variable."""
+        return t.cast(t.Self, self._binary_operation(self, lambda a, _: -a))
 
-    def __le__(self, other) -> ProteusVariable:
-        return self._binary_operation(other, lambda a, b: a <= b)
+    # Comparison operations
+    def __lt__(self, other: t.Any) -> bool:
+        return t.cast(bool, self._binary_operation(other, lambda a, b: a < b))
 
-    def __gt__(self, other) -> ProteusVariable:
-        return self._binary_operation(other, lambda a, b: a > b)
-
-    def __lt__(self, other) -> ProteusVariable:
-        return self._binary_operation(other, lambda a, b: a < b)
-
-    def __rge__(self, other) -> ProteusVariable:
-        return self.__lt__(other)
-
-    def __rle__(self, other) -> ProteusVariable:
-        return self.__gt__(other)
-
-    def __rgt__(self, other) -> ProteusVariable:
-        return self.__le__(other)
-
-    def __rlt__(self, other) -> ProteusVariable:
+    def __rlt__(self, other: t.Any) -> bool:
         return self.__ge__(other)
 
-    def __getitem__(self, key: str | int):
-        if isinstance(self.values, dict):
-            if isinstance(key, int):
-                return self.values[list(self.values.keys())[key]]
-            else:
-                return self.values[key]
-        else:
-            if isinstance(key, int):
-                return self.values[key]
-            else:
-                raise ValueError("Key must be an integer for a list.")
+    def __le__(self, other: t.Any) -> bool:
+        return t.cast(bool, self._binary_operation(other, lambda a, b: a <= b))
 
-    def get_value_at_sim(self, sim_no: int | StochasticScalar):
-        _get_value = lambda x: (  # noqa : E731
-            x.get_value_at_sim(sim_no)
-            if isinstance(x, ProteusVariable)
-            else x[sim_no] if x.n_sims > 1 else x
+    def __rle__(self, other: t.Any) -> bool:
+        return self.__gt__(other)
+
+    def __gt__(self, other: t.Any) -> bool:
+        return t.cast(bool, self._binary_operation(other, lambda a, b: a > b))
+
+    def __rgt__(self, other: t.Any) -> bool:
+        return self.__le__(other)
+
+    def __ge__(self, other: t.Any) -> bool:
+        return t.cast(bool, self._binary_operation(other, lambda a, b: a >= b))
+
+    def __rge__(self, other: t.Any) -> bool:
+        return self.__lt__(other)
+
+    # Equality operations
+    def __eq__(self, other: object) -> bool:
+        raise NotImplementedError
+
+    def __ne__(self, other: object) -> bool:
+        raise NotImplementedError
+
+    def __getitem__(self, key: int | str) -> NumericLike:
+        if isinstance(key, int):
+            return self.values[list(self.values.keys())[key]]
+        else:
+            return self.values[key]
+
+    def _get_value_at_sim_helper(
+        self, x: NumericLike, sim_no: int | StochasticScalar
+    ) -> ProteusLike:
+        """Helper method to get value at simulation for a single element."""
+        if isinstance(x, ProteusVariable):
+            return x.get_value_at_sim(sim_no)
+
+        if isinstance(x, StochasticScalar) or isinstance(x, FreqSevSims):
+            # Handle StochasticScalar and FreqSevSims types
+            if x.n_sims is None:
+                # If n_sims is None, return the value directly
+                return x
+
+            if x.n_sims <= 1:
+                # If n_sims is 1 or None, return the value directly
+                return x
+
+            if isinstance(sim_no, StochasticScalar):
+                # Extract all values and return a new StochasticScalar with those indices
+                indices = sim_no.values.astype(int)
+                return StochasticScalar(x.values[indices])
+
+        if isinstance(x, NumericLike):
+            # If x is a scalar, return it directly
+            return x
+
+        raise TypeError(
+            f"Unsupported type for value at simulation: {type(x).__name__}. "
+            "Expected ProteusVariable, StochasticScalar, FreqSevSims, or Numeric."
         )
-        if isinstance(self.values, dict):
-            result = ProteusVariable(
-                dim_name=self.dim_name,
-                values={k: _get_value(v) for k, v in self.values.items()},
-            )
-        elif isinstance(self.values, list):
-            result = ProteusVariable(
-                dim_name=self.dim_name,
-                values=[_get_value(v) for v in self.values],
-            )
-        return result
+
+    def get_value_at_sim(self, sim_no: int | StochasticScalar) -> t.Self:
+        """Get values at specific simulation number(s)."""
+        # FIXME: this makes a bit of a mess of the interface. Would make sense to just
+        # make use of the __getitem__ method instead. Since ProteusVariable is
+        # SequenceLike, it should support indexing with integers and strings.
+        return type(self)(
+            dim_name=self.dim_name,
+            values={
+                k: self._get_value_at_sim_helper(v, sim_no)
+                for k, v in self.values.items()
+            },
+        )
 
     def all(self) -> bool:
-        if isinstance(self.values, dict):
-            return all([value.all() for value in self.values.values()])
-        else:
-            return all([value.all() for value in self.values])
+        """Return True if all values are True.
+
+        Assumes that values also support the `all()` method, such as
+        ProteusStochasticVariable or FreqSevSims. If not, just checks for truthiness.
+
+        Returns:
+            True if all values are True, False otherwise.
+        """
+
+        def _is_truthy(value: t.Any) -> bool:
+            try:
+                return bool(value.all())
+            except AttributeError:
+                return bool(value)
+
+        return all(_is_truthy(value) for value in self.values.values())
 
     def any(self) -> bool:
-        if isinstance(self.values, dict):
-            return any([value.any() for value in self.values.values()])
-        else:
-            return any([value.any() for value in self.values])
+        """Return True if any value is True."""
+
+        def _is_truthy(value: t.Any) -> bool:
+            try:
+                return bool(value.any())
+            except AttributeError:
+                return bool(value)
+
+        return any(_is_truthy(value) for value in self.values.values())
 
     def percentile(self, p: float | list[float]) -> ProteusVariable:
         """Return the percentile of the variable across the simulation dimension."""
-        if isinstance(self.values, dict):
-            return ProteusVariable(
-                dim_name=self.dim_name,
-                values={
-                    key: (
-                        value.percentile(p)
-                        if isinstance(value, ProteusStochasticVariable)
-                        else value
-                    )
-                    for key, value in self.values.items()
-                },
-            )
-        else:
-            return ProteusVariable(
-                dim_name=self.dim_name,
-                values=[
-                    (
-                        value.percentile(p)
-                        if isinstance(value, ProteusStochasticVariable)
-                        else value
-                    )
-                    for value in self.values
-                ],
-            )
+        raise NotImplementedError
+        # FIXME: This code is untested and will also raise an AttributeError if it's
+        # called. Notice that the ProteusStochasticVariable class does not have a
+        # percentile method.
+        return ProteusVariable(
+            dim_name=self.dim_name,
+            values={
+                key: (
+                    value.percentile(p)
+                    if isinstance(value, ProteusStochasticVariable)
+                    else value
+                )
+                for key, value in self.values.items()
+            },
+        )
 
     def tvar(self, p: float | list[float]) -> ProteusVariable:
         """Return the tail value at risk (TVAR) of the variable."""
-        if isinstance(self.values, dict):
-            return ProteusVariable(
-                dim_name=self.dim_name,
-                values={
-                    key: (
-                        value.tvar(p)
-                        if isinstance(value, ProteusStochasticVariable)
-                        else value
-                    )
-                    for key, value in self.values.items()
-                },
-            )
-        else:
-            return ProteusVariable(
-                dim_name=self.dim_name,
-                values=[
-                    (
-                        value.tvar(p)
-                        if isinstance(value, ProteusStochasticVariable)
-                        else value
-                    )
-                    for value in self.values
-                ],
-            )
+        raise NotImplementedError
+        # Again, ProteusStochasticVariable does not have a tvar method, so this code
+        # is not expected to work as is.
+        return ProteusVariable(
+            dim_name=self.dim_name,
+            values={
+                key: (
+                    value.tvar(p)
+                    if isinstance(value, ProteusStochasticVariable)
+                    else value
+                )
+                for key, value in self.values.items()
+            },
+        )
 
     def mean(self) -> ProteusVariable:
         """Return the mean of the variable across the simulation dimension."""
-        if isinstance(self.values, dict):
-            return ProteusVariable(
-                dim_name=self.dim_name,
-                values={
-                    key: (
-                        value.mean()
-                        if isinstance(value, ProteusStochasticVariable)
-                        else value
-                    )
-                    for key, value in self.values.items()
-                },
+
+        def _mean_helper(value: NumericLike) -> t.Any:
+            """Helper function to compute mean for different value types."""
+            if isinstance(value, FreqSevSims):
+                return value.aggregate().mean()
+            if isinstance(value, StochasticScalar):
+                return value.mean()
+            if isinstance(value, ProteusVariable):
+                # For nested ProteusVariable, recursively compute mean
+                return value.mean()
+            if isinstance(value, (int, float, np.number)):
+                # If the value is a scalar, return it directly
+                return float(value)
+            raise TypeError(
+                f"{type(value).__name__} cannot be converted to float. "
+                "Mean cannot be computed."
             )
-        else:
-            return ProteusVariable(
-                dim_name=self.dim_name,
-                values=[
-                    (
-                        value.mean()
-                        if isinstance(value, ProteusStochasticVariable)
-                        else value
-                    )
-                    for value in self.values
-                ],
-            )
+
+        return ProteusVariable(
+            dim_name=self.dim_name,
+            values={key: _mean_helper(value) for key, value in self.values.items()},
+        )
 
     def upsample(self, n_sims: int) -> ProteusVariable:
-        """Upsample the variable to the specified number of simulations"""
+        """Upsample the variable to the specified number of simulations."""
         if self.n_sims == n_sims:
             return self
-        if isinstance(self.values, dict):
-            return ProteusVariable(
-                dim_name=self.dim_name,
-                values={
-                    key: (
-                        value.upsample(n_sims)
-                        if isinstance(value, ProteusStochasticVariable)
-                        else value
-                    )
-                    for key, value in self.values.items()
-                },
-            )
-        else:
-            return ProteusVariable(
-                dim_name=self.dim_name,
-                values=[
-                    (
-                        value.upsample(n_sims)
-                        if isinstance(value, ProteusStochasticVariable)
-                        else value
-                    )
-                    for value in self.values
-                ],
-            )
-
-    def __eq__(self, other):
-        return self._binary_operation(other, lambda a, b: a == b)
+        return ProteusVariable(
+            dim_name=self.dim_name,
+            values={
+                key: (
+                    value.upsample(n_sims)
+                    if isinstance(value, ProteusStochasticVariable)
+                    else value
+                )
+                for key, value in self.values.items()
+            },
+        )
 
     @classmethod
     def from_csv(
@@ -423,13 +506,13 @@ class ProteusVariable:
         file_name: str,
         dim_name: str,
         values_column: str,
-        simulation_column="Simulation",
+        simulation_column: str = "Simulation",
     ) -> ProteusVariable:
         """Import a ProteusVariable from a CSV file.
 
         Note that only one dimensional variables are supported.
         """
-        df = pd.read_csv(file_name)
+        df: pd.DataFrame = pd.read_csv(file_name)
         pivoted_df = df.pivot(
             index=simulation_column, columns=dim_name, values=values_column
         )
@@ -468,73 +551,97 @@ class ProteusVariable:
         Note that only one dimensional variables are supported.
         """
         result = cls(
-            dim_name=data.index.name,
+            dim_name=str(data.index.name) if data.index.name is not None else "Dim1",
             values={label: data[label] for label in data.index},
         )
         result.n_sims = 1
 
         return result
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"ProteusVariable(dim_name={self.dim_name}, values={self.values})"
 
-    def correlation_matrix(self, correlation_type="spearman") -> list[list[float]]:
-        # validate type
+    def correlation_matrix(
+        self, correlation_type: str = "spearman"
+    ) -> list[list[float]]:
+        """Compute correlation matrix between variables."""
         correlation_type = correlation_type.lower()
-        assert correlation_type in ["linear", "spearman", "kendall"]
-        assert hasattr(self[0], "values")
+        if correlation_type not in ["linear", "spearman", "kendall"]:
+            raise ValueError(
+                f"Unsupported correlation type: {correlation_type}. "
+                "Supported types are 'linear', 'spearman', and 'kendall'."
+            )
+        if not hasattr(self, "values"):
+            raise TypeError(f"{type(self).__name__} does not have 'values' attribute.")
         n = len(self.values)
         result: list[list[float]] = [[0.0] * n] * n
         values = [self[i] for i in range(len(self.values))]
-        if correlation_type.lower() in ["spearman", "kendall"]:
-            # rank the variables first
-            for i, value in enumerate(values):
-                values[i] = scipy.stats.rankdata(value.values)
 
-        if correlation_type == "kendall":
-            for i, value1 in enumerate(values):
-                for j, value2 in enumerate(values):
-                    result[i][j] = scipy.stats.kendalltau(value1, value2)
+        # Extract underlying arrays for correlation calculations
+        numeric_values = []
+        for value in values:
+            if hasattr(value, "values"):
+                numeric_values.append(value.values)
+            else:
+                numeric_values.append(value)
+
+        if correlation_type.lower() in ["spearman", "kendall"]:
+            # Check that all values are supported for ranking
+            for _, value in enumerate(values):
+                if not isinstance(value, (ProteusVariable | ProteusStochasticVariable)):
+                    raise TypeError(f"{value} not supported. Spearman and Kendall")
+
+            # rank the variables first
+            ranked_values = [scipy.stats.rankdata(arr) for arr in numeric_values]
+
+            # FIXME: The logic here is unfinished.
+            raise NotImplementedError
+
+        elif correlation_type == "kendall":
+            for i, value1 in enumerate(numeric_values):
+                for j, value2 in enumerate(numeric_values):
+                    statistic, _ = scipy.stats.kendalltau(value1, value2)
+                    result[i][j] = t.cast(float, statistic)
         else:
-            result = np.corrcoef(values).tolist()
+            raise ValueError(f"Unsupported correlation type: {correlation_type}")
 
         return result
 
-    def show_histogram(self, title: str | None = None):
+    def show_histogram(self, title: str | None = None) -> None:
         """Show a histogram of the variable values.
 
         Args:
             title (str | None): The title of the histogram. If None, no title is set.
 
         """
+        if os.getenv("PAL_SUPPRESS_PLOTS", "").lower() == "true":
+            return
         fig = go.Figure(layout=go.Layout(title=title))
-        labels = (
-            self.values.keys()
-            if isinstance(self.values, dict)
-            else range(len(self.values))
-        )
-        for value, label in zip(self.values.values(), labels):
-            fig.add_trace(go.Histogram(x=value.values, name=label))
+        for label, value in self.values.items():
+            fig.add_trace(go.Histogram(x=value.values(), name=label))
         fig.show()
 
-    def show_cdf(self, title: str | None = None):
-        """Show a plot of the cumulative distribution function (cdf) of the variable values.
+    def show_cdf(self, title: str | None = None) -> None:
+        """Plot the cumulative distribution function (cdf) of the variable values.
 
         Args:
-            title (str | None): The title of the cdf. If None, no title is set.
-
+            title: Optional title for the cdf. If None, no title is set.
         """
-
+        if os.getenv("PAL_SUPPRESS_PLOTS", "").lower() == "true":
+            return
         fig = go.Figure(layout=go.Layout(title=title))
-        labels = (
-            self.values.keys()
-            if isinstance(self.values, dict)
-            else range(len(self.values))
-        )
-        for value, label in zip(self.values.values(), labels):
+        for label, value in self.values.items():
+            if not isinstance(value, (ProteusVariable | ProteusStochasticVariable)):
+                raise TypeError(
+                    f"{type(value).__name__} does not support CDF plotting. "
+                )
+            if value.n_sims is None or value.n_sims <= 1:
+                raise ValueError(
+                    "CDF can only be plotted for variables with multiple simulations."
+                )
             fig.add_trace(
                 go.Scatter(
-                    x=np.sort(value.values),
+                    x=np.sort(np.array(value.values)),
                     y=np.arange(value.n_sims) / value.n_sims,
                     name=label,
                 )
